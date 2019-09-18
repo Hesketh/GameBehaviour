@@ -1,0 +1,204 @@
+I had to place this class in the General Project as I couldnt access the Physics project and the General Project Files from this one (attempting to do so would result in circular dependancy)
+
+////////////////////////
+////////////////////////
+AIController.h
+////////////////////////
+////////////////////////
+
+#pragma once
+#include <deque>
+#include "CharacterController.h"
+#include "Vector2.h"
+#include <vector>
+
+namespace Hesketh
+{
+	class AIController : public CharacterController
+	{
+	private:
+		std::deque<Vector2> m_path;
+		std::vector<Entity*> m_targets;
+
+		int m_pathCalcInterval = 270;
+		int m_pathCurrInterval = 0;
+
+		int m_stuckCount = 0;
+	public:
+		AIController();
+		~AIController();
+
+		void UpdatePath(Entity* target);
+		void SetTargetEntity(std::vector<Entity*> targets);
+
+		void Start() override;
+		void Update() override;
+		void FixedUpdate() override;
+	};
+}
+
+////////////////////////
+////////////////////////
+AIController.cpp
+////////////////////////
+////////////////////////
+
+#include "AIController.h"
+#include <vector>
+#include "AStar.h"
+#include "Scene.h"
+#include "Application.h"
+
+Hesketh::AIController::AIController()
+{
+}
+
+Hesketh::AIController::~AIController()
+{
+}
+
+#include <iostream>
+void Hesketh::AIController::UpdatePath(Entity* target)
+{
+	m_path.clear();
+
+	auto ignoreList = m_targets;
+	ignoreList.push_back(m_owner);
+
+	auto scene = Application::Instance().Scene()->DiscretisedScene(ignoreList, 0.5);
+	auto nodes = std::vector<Node>();
+	auto edges = std::vector<Edge>();
+
+	double valuesPerSingle = scene.size() / (Application::Instance().Window()->GetWidth() / Application::Instance().Window()->GetPixelsToMetre());
+
+	for (double i = 0; i < scene.size(); i++)
+	{
+		double x = i / valuesPerSingle;
+		for (double j = 0; j < scene[i].size(); j++)
+		{
+			double y = j / valuesPerSingle;
+			nodes.push_back(Vector2(x, y));
+
+			// Only bother working out where we can go from this node if we can actually go from it
+			if (scene.at(i).at(j) == 0)
+			{
+				// Lamba Function (pretty cool). Marked mutable since it will change captured values
+				// This section of code was duplicated heavily this reduces that
+				// Probably should be its own method?
+				auto CheckConnection = [&x, &y, &scene, &valuesPerSingle, &edges](int oI, int oJ) mutable
+				{
+					if (oI < scene.size() && oI >= 0)	// Verify the X position is valid
+					{
+						double oX = oI / valuesPerSingle;
+						if (oJ < scene.at(oI).size() && oJ >= 0) // Verify the Y position is valid
+						{
+							double oY = oJ / valuesPerSingle;
+							if (scene.at(oI).at(oJ) == 0)
+							{
+								// We can go back and forth from this node
+								edges.push_back(Edge(Vector2(x, y), Vector2(oX, oY)));
+								edges.push_back(Edge(Vector2(oX, oY), Vector2(x, y)));
+							}
+						}
+					}
+				};
+
+				// We check the value to the upper left of the current node
+				CheckConnection(i - 1, j + 1);
+
+				// Bottom Left
+				CheckConnection(i - 1, j - 1);
+
+				// Left
+				CheckConnection(i - 1, j);
+
+				// Bottom
+				CheckConnection(i, j - 1);
+			}
+		}
+	}
+
+	AStar pathfinder = AStar(nodes, edges);
+	m_path = pathfinder.FindRoute(m_owner->GetPosition(), target->GetPosition());
+}
+
+void Hesketh::AIController::SetTargetEntity(std::vector<Entity*> targets)
+{
+	m_targets = targets;
+}
+
+void Hesketh::AIController::Start()
+{
+	CharacterController::Start();
+}
+
+void Hesketh::AIController::Update()
+{
+}
+
+#include <iostream>
+void Hesketh::AIController::FixedUpdate()
+{
+	// We only update the AI every so often
+	m_pathCurrInterval++;
+	if (m_pathCurrInterval > m_pathCalcInterval)
+	{
+		m_pathCurrInterval = 0;
+
+		// Target the nearest coin
+		Entity* target = nullptr;
+		float distance = std::numeric_limits<float>().max();
+
+		for (Entity* t : m_targets)
+		{
+			float tDistance = (m_owner->GetPosition() - t->GetPosition()).Distance();
+			if (tDistance < distance)
+			{
+				distance = tDistance;
+				target = t;
+			}
+		}
+
+		UpdatePath(target);
+	}
+
+	const float floatCorrection = 0.25f;
+	Vector2& currentPos = m_owner->GetPosition();
+
+	if (m_path.size() > 0)
+	{
+		m_stuckCount = 0;
+		if ((currentPos - m_path[0]).Distance() >= floatCorrection)
+		{
+			if (m_path[0][0] < currentPos[0] + floatCorrection)
+			{
+				MoveLeft();
+			}
+			else if ((m_path[0][0] > currentPos[0] + floatCorrection))
+			{
+				MoveRight();
+			}
+
+			if ((m_path[0][1] > currentPos[1] + floatCorrection))
+			{
+				Jump();
+			}
+		}
+		else
+		{
+			// We are close enough
+			m_path.pop_front();
+		}
+	}
+	else
+	{
+		m_stuckCount++;
+		if (m_stuckCount > 300)
+		{
+			m_owner->SetPosition(Vector2(1.5, 5));
+			m_stuckCount = 0;
+		}
+	}
+
+	CharacterController::FixedUpdate();
+}
